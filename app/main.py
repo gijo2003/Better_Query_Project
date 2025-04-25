@@ -1,6 +1,3 @@
-# main.py
-# Aplicação principal com interface Streamlit
-
 import streamlit as st
 import pandas as pd
 import networkx as nx
