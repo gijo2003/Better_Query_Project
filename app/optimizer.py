@@ -1,122 +1,110 @@
 # optimizer.py
-# Otimizador de consultas baseado em heurísticas
-
-import copy
-from metadata import TABLES
+from copy import deepcopy
+from relational_algebra import (
+    ast_to_relational_algebra,
+    Relation,
+    Selection,
+    Projection,
+    Join
+)
 
 def optimize_query(parsed_sql):
     """
-    Aplica heurísticas de otimização na consulta SQL parseada.
-    
-    Args:
-        parsed_sql (dict): Consulta SQL parseada
-        
-    Returns:
-        tuple: (consulta otimizada, lista de etapas de otimização)
-    """
-    if not parsed_sql:
-        return None, []
-        
-    optimized_sql = copy.deepcopy(parsed_sql)
-    optimization_steps = []
-        
-    # Heurística 1: Aplicar primeiro as operações de seleção mais restritivas
-    if optimized_sql['where']:
-        # Obter as condições WHERE
-        where_conditions = optimized_sql['where']
-        
-        # Classificar as condições por "restritividade" (uma abordagem simples)
-        # Priorizar condições de igualdade (=) sobre desigualdade (>, <, >=, <=)
-        # Dentro de cada grupo, priorizar condições sobre chaves primárias e estrangeiras
-        restrictive_conditions = []
-        less_restrictive_conditions = []
-        
-        for condition in where_conditions:
-            # Verificar se é uma condição de igualdade
-            if '=' in condition and '<>' not in condition and '<=' not in condition and '>=' not in condition:
-                # Verificar se envolve uma chave primária ou estrangeira
-                if 'id' in condition.lower():
-                    restrictive_conditions.insert(0, condition)  # Inserir no início (maior prioridade)
-                else:
-                    restrictive_conditions.append(condition)  # Inserir no final
-            else:
-                less_restrictive_conditions.append(condition)
-        
-        # Reorganizar as condições WHERE
-        optimized_sql['where'] = restrictive_conditions + less_restrictive_conditions
-        
-        if where_conditions != optimized_sql['where']:
-            optimization_steps.append("Otimização: Reordenadas as condições WHERE para aplicar primeiro as operações de seleção mais restritivas.")
-    
-    # Heurística 2: Reordenar os JOINs para aplicar primeiro os mais restritivos
-    if len(optimized_sql['joins']) > 1:
-        # Calcular o "peso" de cada JOIN com base no número de condições de seleção sobre cada tabela
-        join_weights = {}
-        
-        for i, join in enumerate(optimized_sql['joins']):
-            table_name = join['table']
-            table_alias = join['alias'] if join['alias'] else table_name
-            
-            # Contar condições WHERE que envolvem esta tabela
-            table_conditions = 0
-            for condition in optimized_sql['where']:
-                if f"{table_name}." in condition.lower() or f"{table_alias}." in condition.lower():
-                    table_conditions += 1
-            
-            # O peso é baseado no número de condições (mais condições = mais restritivo)
-            join_weights[i] = table_conditions
-        
-        # Ordenar os JOINs pelo peso (mais restritivos primeiro)
-        sorted_joins = sorted(
-            [(i, join) for i, join in enumerate(optimized_sql['joins'])],
-            key=lambda x: join_weights[x[0]],
-            reverse=True  # Ordem decrescente (mais restritivos primeiro)
-        )
-        
-        # Verificar se a ordem dos JOINs foi alterada
-        if [i for i, _ in sorted_joins] != list(range(len(optimized_sql['joins']))):
-            # A ordem foi alterada, então re-ordenar os JOINs
-            optimized_sql['joins'] = [join for _, join in sorted_joins]
-            optimization_steps.append("Otimização: Reordenados os JOINs para aplicar primeiro os mais restritivos.")
-    
-    # Heurística 3: Evitar produtos cartesianos
-    # Isso é implicitamente garantido ao usar JOIN ... ON ao invés de vírgulas no FROM
-    
-    # Heurística 4: Aplicar projeções antecipadas para reduzir o número de atributos
-    # Identificar apenas os campos que são necessários para a consulta final
-    needed_columns = set()
-    
-    # Colunas no SELECT
-    for col in optimized_sql['select']:
-        if '.' in col:
-            needed_columns.add(col.lower())
-        else:
-            # Coluna sem qualificação de tabela (verificar em todas as tabelas)
-            for table in optimized_sql['from']:
-                if f"{table}.{col}".lower() in [f"{t}.{c}".lower() for t in optimized_sql['from'] for c in TABLES[t]]:
-                    needed_columns.add(f"{table}.{col}".lower())
-    
-    # Colunas nas condições WHERE
-    for condition in optimized_sql['where']:
-        # Simplificação: apenas extrair possíveis nomes de coluna
-        # Na prática, precisaríamos de um parser mais sofisticado
-        for part in re.split(r'[=<>!]+', condition):
-            part = part.strip()
-            if '.' in part:
-                needed_columns.add(part.lower())
-    
-    # Colunas nas condições JOIN
-    for join in optimized_sql['joins']:
-        condition = join['condition']
-        for part in re.split(r'[=<>!]+', condition):
-            part = part.strip()
-            if '.' in part:
-                needed_columns.add(part.lower())
-    
-    # Adicionar informação de colunas necessárias para otimização
-    optimized_sql['needed_columns'] = list(needed_columns)
-    optimization_steps.append(f"Otimização: Identificadas {len(needed_columns)} colunas necessárias para a consulta.")
-    
-    return optimized_sql, optimization_steps
+    Converte parsed_sql em árvore de RA e aplica, em sequência:
+      1) push-down de seleção
+      2) push-down de projeção
 
-import re  # Adicionando import necessário para o módulo re
+    Retorna (árvore_otimizada, lista_de_passos).
+    """
+    original = ast_to_relational_algebra(parsed_sql)
+    current  = deepcopy(original)
+    steps    = []
+
+    # 1) Push-down de seleção (atravessa π e alcança ⋈ em uma passada)
+    new = _push_selection_down(current)
+    if new is not current:
+        steps.append("Push-down de seleção")
+        current = new
+
+    # 2) Push-down de projeção (alcança ⋈ em uma passada)
+    new = _push_projection_down(current)
+    if new is not current:
+        steps.append("Push-down de projeção")
+        current = new
+
+    return current, steps
+
+
+def _push_selection_down(expr):
+    # Seleção sobre Projeção?
+    if isinstance(expr, Selection) and isinstance(expr.child, Projection):
+        sel, pr = expr, expr.child
+        return Projection(pr.attributes, Selection(sel.condition, pr.child))
+
+    # Seleção sobre Join?
+    if isinstance(expr, Selection) and isinstance(expr.child, Join):
+        sel, jn = expr, expr.child
+        tables   = {c.split('.')[0].lower() for c in sel.condition.columns}
+        left_nm  = (_rel_name(jn.left)  or "").lower()
+        right_nm = (_rel_name(jn.right) or "").lower()
+        if tables == {left_nm}:
+            return Join(Selection(sel.condition, jn.left), jn.right, jn.condition)
+        if tables == {right_nm}:
+            return Join(jn.left, Selection(sel.condition, jn.right), jn.condition)
+
+    # recursão simples (uma camada)
+    for attr in ('child','left','right'):
+        if hasattr(expr, attr):
+            sub = getattr(expr, attr)
+            new = _push_selection_down(sub)
+            if new is not sub:
+                setattr(expr, attr, new)
+                return expr
+
+    return expr
+
+
+def _push_projection_down(expr):
+    # Projeção sobre Join?
+    if isinstance(expr, Projection) and isinstance(expr.child, Join):
+        pr, jn = expr, expr.child
+        left_nm  = _rel_name(jn.left)
+        right_nm = _rel_name(jn.right)
+
+        left_attrs  = [a for a in pr.attributes if a.split('.')[0] == left_nm]
+        right_attrs = [a for a in pr.attributes if a.split('.')[0] == right_nm]
+
+        for tbl, col in (c.split('.') for c in jn.condition.columns):
+            full = f"{tbl}.{col}"
+            if tbl == left_nm  and full not in left_attrs:
+                left_attrs.append(full)
+            if tbl == right_nm and full not in right_attrs:
+                right_attrs.append(full)
+
+        new_left  = Projection(left_attrs,  jn.left)
+        new_right = Projection(right_attrs, jn.right)
+        new_join  = Join(new_left, new_right, jn.condition)
+        return Projection(pr.attributes, new_join)
+
+    # recursão simples (uma camada)
+    for attr in ('child','left','right'):
+        if hasattr(expr, attr):
+            sub = getattr(expr, attr)
+            new = _push_projection_down(sub)
+            if new is not sub:
+                setattr(expr, attr, new)
+                return expr
+
+    return expr
+
+
+def _rel_name(node):
+    # Desce até achar um Relation e ler o nome
+    from relational_algebra import Relation
+    if isinstance(node, Relation):
+        return node.name
+    if hasattr(node, 'child'):
+        return _rel_name(node.child)
+    if hasattr(node, 'left'):
+        return _rel_name(node.left)
+    return ""

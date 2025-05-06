@@ -1,38 +1,45 @@
 # execution_plan.py
-# Gerador de plano de execução
+# Gerador de plano de execução baseado na árvore de Álgebra Relacional
 
-def get_execution_steps(parsed_sql, optimized_sql, graph):
+from relational_algebra import Relation, Selection, Join, Projection
+
+
+def get_execution_steps(original_tree, optimized_tree, graph, optimization_steps=None):
     """
-    Gera o plano de execução da consulta SQL.
-    
+    Gera o plano de execução da árvore de Álgebra Relacional otimizada.
+
     Args:
-        parsed_sql (dict): Consulta SQL parseada original
-        optimized_sql (dict): Consulta SQL otimizada
-        graph (networkx.DiGraph): Grafo de operadores
-        
+        original_tree: nó raiz da árvore de RA original (não usado)
+        optimized_tree: nó raiz da árvore de RA otimizada
+        graph: grafo de operadores (NetworkX DiGraph)
+        optimization_steps (list, opcional): lista de strings com passos de otimização
+
     Returns:
-        list: Lista de passos de execução
+        list: lista de passos executáveis
     """
     steps = []
-    
-    # Adicionar passos de otimização
-    if 'optimization_steps' in optimized_sql:
-        steps.extend(optimized_sql['optimization_steps'])
-    
-    # Acessar tabelas base
-    for table in optimized_sql['from']:
-        steps.append(f"Acesso à tabela base: {table}")
-    
-    # Aplicar junções
-    for i, join in enumerate(optimized_sql['joins']):
-        steps.append(f"Junção: {join['table']} ON {join['condition']}")
-    
-    # Aplicar filtros WHERE
-    for i, condition in enumerate(optimized_sql['where']):
-        steps.append(f"Filtro: {condition}")
-    
-    # Projeção final
-    columns = ", ".join(optimized_sql['select'])
-    steps.append(f"Projeção: {columns}")
-    
+    # 1) inserir passos de otimização, se houver
+    if optimization_steps:
+        steps.extend(optimization_steps)
+
+    # 2) percorrer a árvore otimizada em pós-ordem
+    def _walk(node):
+        if isinstance(node, Relation):
+            steps.append(f"Acesso à tabela base: {node.name}")
+        elif isinstance(node, Selection):
+            _walk(node.child)
+            steps.append(f"Filtro: {node.condition}")
+        elif isinstance(node, Join):
+            _walk(node.left)
+            _walk(node.right)
+            steps.append(f"Junção: {node.condition}")
+        elif isinstance(node, Projection):
+            _walk(node.child)
+            attrs = ", ".join(node.attributes)
+            steps.append(f"Projeção: {attrs}")
+        else:
+            # nó desconhecido, ignora
+            pass
+
+    _walk(optimized_tree)
     return steps
