@@ -77,7 +77,7 @@
 
   - Consulta Simples: `SELECT Nome, Email FROM Cliente WHERE idCliente > 5`
   - Consulta com JOIN: `SELECT p.Nome, c.Descricao FROM Produto p JOIN Categoria c ON p.Categoria_idCategoria = c.idCategoria`
-  - Consulta Complexa: `SELECT c.Nome, p.DataPedido, pr.Nome FROM Cliente c JOIN Pedido p ON c.idCliente = p.Cliente_idCliente JOIN Pedido_has_Produto php ON p.idPedido = php.Pedido_idPedido JOIN Produto pr ON php.Produto_idProduto = pr.idProduto WHERE p.ValorTotalPedido > 100`
+  - Consulta Complexa: `Select cliente.nome, pedido.idPedido, pedido.DataPedido, pedido.ValorTotalPedido from Cliente Join pedido on cliente.idcliente = pedido.Cliente_idCliente where cliente.TipoCliente_idTipoCliente = 1 and pedido.ValorTotalPedido = 0;`
 
   ## Mais exemplos de Querys
 
